@@ -1,0 +1,4 @@
+This library will provide an XUnit-style testing framework for SML. For development,
+I am working in the PolyML environment, but it should also work within SML.
+
+Note: this is essentially a very simple port of OUnit which, in turn, is a port of HUnit.
