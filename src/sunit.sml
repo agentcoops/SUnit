@@ -6,7 +6,7 @@
  Author: coopf 
 *)
 
-structure OUnitPort =
+structure SUnit =
 struct
 
 
@@ -36,7 +36,6 @@ val string_of_node =
 fun string_of_path path =
     String.concatWith ":" (map string_of_node (List.rev path))
 
-
 (* Core datatypes and helper functions for encoding and manipulating tests. *)
 type test_fun = unit -> unit
 
@@ -59,8 +58,8 @@ datatype test_event =
 
 fun test_case_count (TestCase _) = 1
   | test_case_count (TestLabel (_, t)) = test_case_count t
-  (*| TestList l => 
-   List.foldl (fn c t => c + test_case_count t) 0 l *)
+  | test_case_count (TestList l) =
+    List.foldl (fn (t, c) => c + test_case_count t) 0 l
 
 val is_failure = 
  fn RFailure _ => true
@@ -83,11 +82,11 @@ val is_todo =
    | _ => false
 
 fun was_successful [] = true
-  | was_successful (RSuccess h::t) = was_successful t
-  | was_successful (RSkip h::t)  = was_successful t    
-  | was_successful (RFailure _) = false  
-  | was_successful (RError _)  = false
-  | was_successful (RTodo _) = false
+  | was_successful ((RSuccess h)::t) = was_successful t
+  | was_successful ((RSkip h)::t)  = was_successful t    
+  | was_successful ((RFailure _)::_) = false  
+  | was_successful ((RError _)::_)  = false
+  | was_successful ((RTodo _)::_) = false
 
 val result_flavour =
  fn RError _ => "Error"
@@ -144,6 +143,43 @@ fun make_list count value =
         make_list_accum [] count
     end
 
+(* Helper function that OUnit uses... *)
+(* Applies function f in turn to each element in list. Function f takes
+   one element, and integer indicating its location in the list *)
+fun mapi f l = 
+    let fun rmapi cnt l = 
+            case l of
+                [] =>  [] 
+              | h :: t => 
+                (f h cnt) :: (rmapi (cnt + 1) t) 
+    in
+        rmapi 0 l
+    end
+    
+fun fold_lefti f accu l =
+    let fun rfold_lefti cnt accup l = 
+            case l of
+                [] => accup
+              | h::t => 
+                rfold_lefti (cnt + 1) (f accup h cnt) t
+    in
+        rfold_lefti 0 accu l
+    end
+    
+
+(* Main functions for running tests! *)
+
+(* Lets us perform set up/tear down actions around a test. *)
+fun bracket set_up f tear_down () = 
+    let val fixture = set_up ()
+    in
+        (f fixture;
+         tear_down fixture) 
+        handle e => 
+               (tear_down fixture;
+                raise e)
+    end
+
 
 fun perform_test report test = 
     let fun run_test_case f path =
@@ -163,7 +199,12 @@ fun perform_test report test =
                                    report (EEnd path);
                                    result::results)
                               end
-              (*| TestList (tests) => *)
+              | TestList (tests) => 
+                let fun run_testi results t cnt = 
+                        run_test ((ListItem cnt)::path) results t
+                in 
+                    fold_lefti run_testi results tests
+                end
               | TestLabel (label, t) => run_test ((Label label)::path) results t          
     in 
         run_test [] [] test
@@ -201,14 +242,17 @@ fun run_test test =
         val skips = List.filter is_skip results
         val todos = List.filter is_todo results
 
-        val cases = test_case_count test
-        val skip_count = List.length skips
-        val result_count = List.length results
+        val cases = Int.toString (test_case_count test)
+        val skip_count = Int.toString (List.length skips)
+        val result_count = Int.toString (List.length results)
+        val error_count = Int.toString (List.length errors)
+        val failure_count = Int.toString (List.length failures)
+        val todo_count = Int.toString (List.length todos)
     in (
         print_result_list errors;
         print_result_list failures;
-        print ("Ran: " ^ Int.toString result_count ^ "tests in " 
-               ^ Time.toString running_time ^ " seconds.\n");
+        print ("Ran: " ^ result_count ^ " tests in " ^ 
+               (Time.toString running_time) ^ " seconds.\n");
         if was_successful results then
             if skips = [] then
                 print "OK!"
@@ -216,59 +260,19 @@ fun run_test test =
                 print ("OK! Cases: " ^ cases ^ ", Skip: " ^ skip_count ^ "\n")
         else 
             print ("FAILED! Cases: " ^ cases ^ " Tried: " ^ result_count ^ 
-                   " Errors: " ^ List.length errors ^ " Failures: " ^ 
-                   List.length failures ^ " Skip: " ^ skip_count ^ 
-                   " Todo: " ^ List.length todos ^ "\n")
+                   " Errors: " ^ error_count ^ " Failures: " ^ failure_count 
+                   ^ " Skip: " ^ skip_count ^ " Todo: " ^ todo_count ^ "\n")
         )
     end
 
-            
-
-
-(* Lets us perform set up/tear down actions around a test. *)
-fun bracket set_up f tear_down () = 
-    let val fixture = set_up ()
-    in
-        (f fixture;
-         tear_down fixture) 
-        handle e => 
-               (tear_down fixture;
-                raise e)
-    end
-
-
+          
+(* Assertions! *)
 fun assert_bool msg b = if not b then fail_with msg else ()
 
 
+(* Syntactic sugar! *)
+infix 3 >:     fun s >: t = TestLabel(s, t)         
+infix 3 >::    fun s >:: f = TestLabel(s, TestCase(f))  (* infix *)
+infix 3 >:::   fun s >::: l = TestLabel(s, TestList(l)) (* infix *)
    
 end
-
-
-
-
-
-(* Guess we don't really need this... 
-signature OUNIT =
-sig
-    type test
-    type test_result
-    type test_event
-    type test_fun
-
-    (* Core Functions *)
-    val perform_test: (test_event -> 'a) -> test -> test_result list
-
-    (* Assertions. Currently missing optional arguments. *)
-    val assert_bool: string -> bool -> unit                         
-    (*val assert_failure: string -> 'a
-    val assert_string: string -> unit                          
-    val assert_equal: 'a -> 'a -> unit (* This really needs to be generalized...*)        
-    val assert_raises: exn -> (unit -> 'a) -> unit*)
-
-    (* Skipping tests. TODO 
-    fun skip_if: bool -> string -> unit 
-    fun todo: string -> unit *)
-                        
-    (* Brackets, functional implementation of setUp/tearDown. *)
-    (*val bracket: (unit -> 'a) -> ('a -> 'c) -> ('a -> 'b) -> unit -> 'b*)
-end *)
